@@ -1,0 +1,19 @@
+# Python cache
+__pycache__/
+*.pyc
+
+# Models / Weights
+models/
+*.gguf
+*.pth
+*.ckpt
+
+# Voice files
+voice/*.wav
+
+# Runtime memory
+memory/state.json
+
+# OS junk
+.DS_Store
+Thumbs.db
