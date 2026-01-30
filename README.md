@@ -17,9 +17,9 @@
 
 ---
 
-## 🧠 What Is Neon?
+## 🧠 What Is Neon – AI Voice Companion?
 
-**Neon** is a **local-first AI voice companion** designed to run primarily on your own machine using a **fully offline LLM + voice pipeline**, with optional and tightly-controlled online access.
+**Neon – AI Voice Companion** is a **local-first AI voice companion** designed to run primarily on your own machine using a **fully offline LLM + voice pipeline**, with optional and tightly-controlled online access.
 
 What started as an experiment evolved into a **full AI system architecture**, not just a chatbot interface.
 
