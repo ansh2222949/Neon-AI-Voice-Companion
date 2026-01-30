@@ -23,8 +23,8 @@
 
 What started as an experiment evolved into a **full AI system architecture**, not just a chatbot interface.
 
-⚠️ **Neon is not a chatbot wrapper.**  
-It is a **system-level AI**, where the model is only one component.
+>⚠️ **Neon is not a chatbot wrapper.**  
+>It is a **system-level AI**, where the model is only one component.
 
 ---
 
@@ -136,12 +136,12 @@ Neon launches in interactive mode
 ✅ Whisper + SoVITS fully working
 ✅ Emotion & memory pipeline stable
 
-⚠️ Experimental
-⚠️ Architecture locked for iteration & research
+>⚠️ Experimental
+>⚠️ Architecture locked for iteration & research
 
-⚠️ Disclaimer
-This project is built for learning, experimentation, and AI system design research.
-It is not a commercial product.
+>⚠️ Disclaimer
+>This project is built for learning, experimentation, and AI system design research.
+>It is not a commercial product.
 
 <div align="center">
 🧠 Author
