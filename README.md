@@ -142,7 +142,7 @@ Neon launches in interactive mode
 ⚠️ Disclaimer
 This project is built for learning, experimentation, and AI system design research.
 It is not a commercial product.
-```
+
 <div align="center">
 🧠 Author
 <b>Ansh</b>
@@ -154,4 +154,4 @@ AI Systems (not just models) • Offline-First AI • Controlled & Safe AI Desig
 <i>“Neon is not about how smart the model is.
 It’s about how controlled, safe, and purposeful AI should be.”</i>
 
-</div> ```
+</div> 
