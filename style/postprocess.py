@@ -1,54 +1,70 @@
 import re
 
 def postprocess_reply(text: str, clean_for_tts: bool = True) -> str:
-    """
-    Advanced Text Cleanup Pipeline.
-    Ensures output is clean, readable, and safe for TTS engines.
-    """
     if not text:
         return ""
 
-    # --- STEP 1: SAFETY CUT-OFF (Anti-Hallucination) ---
-    stop_triggers = ["User:", "System:", "### Response:", "### Instruction:"]
-    for trigger in stop_triggers:
-        if trigger in text:
-            text = text.split(trigger)[0]
-
-    # --- STEP 2: REMOVE SYSTEM ARTIFACTS ---
-    text = re.sub(r"\[.*?\]", "", text)
-    text = re.sub(r"\(Context:.*?\)", "", text)
-
-    # --- STEP 3A: ACTION REMOVAL (ASTERISKED) ---
-    # *smirks*, *laughs*, etc.
-    text = re.sub(r"\*[^*]+\*", "", text)
-
-    # --- STEP 3B: ACTION REMOVAL (BARE WORDS) ✅ FIX ---
-    # rolls eyes, sighs, smirks (without asterisks)
+    # ---------------------------------------------------------
+    # 1. 🚫 REMOVE INTERNAL CONTROL TOKENS (Fixed Root Cause)
+    # ---------------------------------------------------------
+    # Matches "TYPE A:", "TYPE B:", "TYPE C:" followed by text until a dot or newline
     text = re.sub(
-        r"\b(rolls eyes|rolls eye|sighs|smirks|giggles|laughs|eye roll|eyeroll)\b",
-        "",
-        text,
+        r'\bTYPE\s*[ABC]\s*:\s*[^.\n]*', 
+        '', 
+        text, 
         flags=re.IGNORECASE
     )
 
-    # --- STEP 4: CLEAN FOR TTS ---
+    # ---------------------------------------------------------
+    # 2. Standard Cleanup
+    # ---------------------------------------------------------
+
+    # Remove speaker labels (multiline-safe)
+    text = re.sub(
+        r"^\s*(Neon|Assistant|User|System)\s*:\s*",
+        "",
+        text,
+        flags=re.IGNORECASE | re.MULTILINE
+    )
+
+    # Remove parenthesis actions (TTS safety)
+    text = re.sub(r"\([^()]*\)", "", text)
+
     if clean_for_tts:
-        # Remove emojis / weird symbols
-        text = re.sub(r"[^\w\s,!.?']", "", text)
+        # Remove emojis / non-ASCII
+        text = re.sub(r"[^\x00-\x7F]+", "", text)
 
-        # Expand common abbreviations
-        text = text.replace(" idc ", " I don't care ")
-        text = text.replace(" idk ", " I don't know ")
-        text = text.replace(" rn ", " right now ")
+        # Remove markdown
+        text = re.sub(r"\*+|`+", "", text)
 
-    # --- STEP 5: GRAMMAR & PUNCTUATION REPAIR ---
-    text = re.sub(r'\s+([?.!,"])', r'\1', text)
-    text = re.sub(r'\.(?=[A-Z])', '. ', text)
+        # Expand slang
+        slang_map = {
+            r"\bidc\b": "I don't care",
+            r"\bidk\b": "I don't know",
+            r"\brn\b": "right now",
+            r"\btbh\b": "to be honest",
+            r"\bplz\b": "please",
+            r"\bpls\b": "please",
+            r"\bcuz\b": "because",
+            r"\bcos\b": "because",
+            r"\bnvm\b": "never mind",
+            r"\bjk\b": "just kidding",
+            r"\bwdym\b": "what do you mean"
+        }
 
-    # --- STEP 6: FINAL POLISH ---
+        for k, v in slang_map.items():
+            text = re.sub(k, v, text, flags=re.IGNORECASE)
+
+    # Cleanup spacing & punctuation
     text = re.sub(r"\s+", " ", text).strip()
+    
+    # Ensure space after punctuation if missing (e.g., "Hello.How are you")
+    text = re.sub(r'([?.!,])(?=[A-Za-z])', r'\1 ', text)
 
-    if text:
-        text = text[0].upper() + text[1:]
+    if not text:
+        return "Hmm?"
 
-    return text
+    text = text.lstrip()
+    
+    # Capitalize first letter
+    return text[0].upper() + text[1:]

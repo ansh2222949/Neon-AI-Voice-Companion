@@ -20,7 +20,7 @@ def set_reference():
             timeout=60
         )
         r.raise_for_status()
-        print("✅ Reference voice set successfully")
+        print("[OK] Reference voice set successfully")
 
     except Exception as e:
         print("[REF ERROR]", e)

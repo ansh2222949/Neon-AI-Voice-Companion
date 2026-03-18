@@ -1,157 +1,288 @@
-<div align="center">
+# NEON AI System
 
-# 🚀 Neon – AI Voice Companion  
-### Local-First • Voice-Driven • Experimental AI System
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](#requirements)
+[![Expo](https://img.shields.io/badge/Expo-SDK_54-000020?logo=expo&logoColor=white)](#run-mobile-app-expo)
+[![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white)](#run-mobile-backend-fastapi)
 
-<p>
-  <img src="https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python&logoColor=white"/>
-  <img src="https://img.shields.io/badge/LLM-Ollama-orange?style=for-the-badge"/>
-  <img src="https://img.shields.io/badge/Model-Noromaid%20(MistralRP)-purple?style=for-the-badge"/>
-  <img src="https://img.shields.io/badge/Voice-GPT--SoVITS-ff69b4?style=for-the-badge"/>
-  <img src="https://img.shields.io/badge/Architecture-Offline%20First-green?style=for-the-badge"/>
-</p>
+Neon is a hybrid **desktop + mobile AI assistant**:
 
-<b>Mode-Driven Intelligence • Privacy-Focused • System > Model</b>
+- **Desktop app**: runs locally (`main.py`) with voice input/output and can open apps on your PC.
+- **Mobile app (Expo)**: a premium UI that talks to a backend and can open apps/links on your phone.
+- **Backend (FastAPI)**: handles chat + voice pipeline (STT → brain → TTS), media upload (DP/wallpaper), and returns **action payloads** the mobile app can execute (open_url / camera / gallery).
 
-</div>
+This repo contains both the Python assistant and the Expo app under `NEON-FRONTEND/`.
 
 ---
 
-## 🧠 What Is Neon – AI Voice Companion?
+## Table of Contents
 
-**Neon – AI Voice Companion** is a **local-first AI voice companion** designed to run primarily on your own machine using a **fully offline LLM + voice pipeline**, with optional and tightly-controlled online access.
-
-What started as an experiment evolved into a **full AI system architecture**, not just a chatbot interface.
-
->⚠️ **Neon is not a chatbot wrapper.**  
->It is a **system-level AI**, where the model is only one component.
-
----
-
-## 🧬 Core AI Stack
-
-- 🧠 **LLM Engine**  
-  - Ollama (local runtime)  
-  - **Noromaid (MistralRP-based)** model from Hugging Face  
-  - Instruction-tuned for roleplay, personality control & system prompts  
-
-- 🎤 **Speech-to-Text (STT)**  
-  - Faster-Whisper (offline, VAD-based)
-
-- 🔊 **Text-to-Speech (TTS)**  
-  - GPT-SoVITS (high-quality voice cloning)
+- [Repo layout](#repo-layout)
+- [Features (high-level)](#features-high-level)
+- [Architecture diagrams](#architecture-diagrams)
+- [Requirements](#requirements)
+- [Environment variables](#environment-variables)
+- [How targeting works (mobile vs desktop)](#how-targeting-works-mobile-vs-desktop)
+- [Run: Desktop Neon (local)](#run-desktop-neon-local)
+- [Run: Mobile backend (FastAPI)](#run-mobile-backend-fastapi)
+- [Run: Mobile app (Expo)](#run-mobile-app-expo)
+- [Build APK (Android)](#build-apk-android)
+- [Common issues / fixes](#common-issues--fixes)
+- [Developer: smoke test commands (offline)](#developer-smoke-test-commands-offline)
 
 ---
 
-## ✨ Core Philosophy
+## Repo layout
 
-- 🧠 **Local LLM First** — No mandatory cloud APIs  
-- 🔒 **Privacy-Focused** — Data never leaves the machine  
-- 🎭 **Mode-Driven Intelligence** — Behavior adapts to context & emotion  
-- 🧪 **Experimental by Design** — Built for AI system research  
-- 🧩 **System > Model** — The LLM never makes final decisions  
-
----
-
-## 🎙️ Core Capabilities
-
-- 🎤 **Voice Input** — Offline Whisper STT with VAD  
-- 🔊 **Voice Output** — GPT-SoVITS (custom voice profiles)  
-- 🧠 **Local LLM Reasoning** — Noromaid via Ollama  
-- 😐 **Emotion Engine** — Internal mood affects tone & response style  
-- 🧠 **Persistent Memory** — Context survives restarts  
-- ⚡ **Dual Input Mode** — Text ↔ Voice seamlessly  
+- `main.py`: Neon desktop runner (voice + CLI loop)
+- `brain/`: LLM logic, tools, personality layer
+  - `brain/llm.py`: model selection (large/small), tool calling, routing to mobile/desktop
+  - `brain/system_controller.py`: tools (open_app, search, play_music, system_status, etc.)
+- `memory/`: persistent state in `memory/state/state.json`
+- `voice/`: STT/TTS integration
+- `style/`: reply postprocessing
+- `NEON-FRONTEND/backend/server.py`: FastAPI backend for mobile app
+- `NEON-FRONTEND/frontend/`: Expo (React Native) mobile app
+- `scripts/smoke_commands.py`: offline smoke test for tool outputs/actions
 
 ---
 
-## 🧱 System Architecture
+## Features (high-level)
 
-**Key Rule:**  
-The LLM never speaks directly to the user.
+### Desktop assistant
+- Voice input (STT) and voice output (TTS)
+- “Command” tool calling:
+  - open apps (desktop)
+  - Google / YouTube search
+  - play music (Spotify / YouTube Music)
+  - system status checks
+- Persistent personality + preferences saved to memory
 
-Every response passes through **emotion analysis, memory context, rule filters, and post-processing**.
+### Mobile app
+- Premium glass UI + video/live wallpaper support
+- Server-backed DP and wallpaper (upload to backend, store URL)
+- Mobile actions:
+  - open URLs
+  - open WhatsApp / Instagram / ChatGPT
+  - open Camera / Gallery
+- Default Target setting: **mobile / desktop** (so you don’t have to say it every time)
+
+---
+
+## Architecture diagrams
+
+### End-to-end flow (mobile voice)
 
 ```mermaid
-graph TD;
-    User((User)) -- Voice/Text --> Input_Handler;
-    Input_Handler -- Audio --> Whisper_STT;
-    Whisper_STT -- Text --> Neon_Brain;
+sequenceDiagram
+  participant User
+  participant ExpoApp as ExpoApp(Phone)
+  participant Backend as FastAPI_Backend
+  participant Brain as NeonBrain(Python)
+  participant Tools as SystemController_Tools
+  participant TTS as TTS_Server
 
-    subgraph BRAIN_CORE
-        Neon_Brain --> Emotion_Engine;
-        Emotion_Engine --> Context_Memory;
-        Context_Memory --> Local_LLM;
-    end
+  User->>ExpoApp: Hold to talk
+  ExpoApp->>Backend: POST /api/voice (audio + target)
+  Backend->>Backend: STT (local pipeline)
+  Backend->>Brain: think_and_reply(text + targetHint)
+  Brain->>Tools: tool calls (open_app/search/play_music/...)
+  Tools-->>Brain: {status,message,action?}
+  Brain-->>Backend: {reply,mode,action?}
+  Backend->>TTS: TTS(reply)
+  TTS-->>Backend: WAV bytes
+  Backend-->>ExpoApp: {audio_url,message,action?}
+  ExpoApp->>ExpoApp: Play audio + execute action (open_url/camera/gallery)
+```
 
-    Local_LLM -- Raw_Response --> Post_Process;
-    Post_Process -- Safe_Text --> GPT_SoVITS_TTS;
-    GPT_SoVITS_TTS -- Audio --> Speakers;
-```
-```📂 Project Structure
-Neon/
-│
-├── main.py                     # Application entry point (Text + Voice)
-├── requirements.txt
-│
-├── brain/
-│   ├── llm.py                  # Ollama + Noromaid interface
-│   └── prompt.py               # Dynamic system prompts
-│
-├── core/
-│   └── emotion.py              # Emotion state machine
-│
-├── memory/
-│   └── memory.py               # Persistent JSON memory
-│
-├── style/
-│   └── postprocess.py          # Response shaping & safety
-│
-├── voice/
-│   ├── hear.py                 # Whisper STT (VAD)
-│   ├── speak.py                # GPT-SoVITS TTS
-│   ├── set_model.py            # Voice model loader
-│   └── set_reference.py        # Voice reference config
-│
-└── .gitignore
-```
-▶️ How To Run
-```1️⃣ Requirements
-Python 3.10+
+### Command routing (mobile vs desktop)
 
-Ollama (running locally)
+```mermaid
+flowchart TD
+  UserText[UserText]
+  TargetHint{Contains mobile/desktop?\n(or DefaultTarget)}
+  Headless{NEON_HEADLESS == 1?}
+  MobileAction[Return action payload\n(open_url/open_camera/open_gallery)]
+  DesktopAction[Open desktop app/browser]
+  ErrorDesktop[Return friendly error\n\"Desktop requested...\"]
 
-GPT-SoVITS API (default port: 9880)
+  UserText --> TargetHint
+  TargetHint -->|mobile| MobileAction
+  TargetHint -->|desktop| Headless
+  TargetHint -->|auto| Headless
+  Headless -->|yes| ErrorDesktop
+  Headless -->|no| DesktopAction
 ```
-```2️⃣ Install Dependencies
-pip install -r requirements.txt
-```
-```3️⃣ Start Neon
+
+---
+
+## Requirements
+
+### Python (desktop + backend)
+- Python 3.10+ recommended
+- Ollama running locally for LLM:
+  - default endpoints: `http://localhost:11434/api/chat` and fallback `.../api/generate`
+- Optional services depending on what you use:
+  - GPT-SoVITS TTS server
+  - Faster-Whisper STT module
+  - MongoDB for backend logs/media metadata (backend continues even if Mongo insert fails for media)
+
+### Mobile app (Expo)
+- Node + npm
+- Expo CLI via `npx expo ...`
+
+---
+
+## Environment variables
+
+### Brain / Ollama models
+In `brain/llm.py`:
+
+- `NEON_MODEL_LARGE` (default: `llama3.2:3b`)
+- `NEON_MODEL_SMALL` (default: `llama3.2:1b`)
+
+### Headless routing (mobile vs desktop)
+`NEON_HEADLESS`:
+
+- `1`: running in mobile/server mode (tools should return **action payloads** instead of opening desktop apps)
+- `0`: running locally (desktop actions allowed)
+
+The mobile backend sets this **per request** based on `target` and restores it safely.
+
+---
+
+## How targeting works (mobile vs desktop)
+
+Neon supports a simple routing rule:
+
+- If you say **“mobile”**, Neon returns a mobile action (open_url / open_camera / open_gallery).
+- If you say **“desktop”**, Neon tries to open the app/site on your PC.
+- In the mobile backend, you can also set `Default Target` in the app settings.
+
+Examples:
+- `open whatsapp mobile`
+- `open chrome desktop`
+- `play lofi mobile`
+- `search youtube desktop`
+
+---
+
+## Run: Desktop Neon (local)
+
+From repo root:
+
+```bash
 python main.py
 ```
-Neon launches in interactive mode
-→ Type text or press Enter to speak.
 
-🧪 Project Status
-✅ Core system functional
-✅ Whisper + SoVITS fully working
-✅ Emotion & memory pipeline stable
+In-app commands:
+- press **Enter** for voice input
+- `help` for the command menu
+- `exit` to quit
 
->⚠️ Experimental
->⚠️ Architecture locked for iteration & research
+---
 
->⚠️ Disclaimer
->This project is built for learning, experimentation, and AI system design research.
->It is not a commercial product.
+## Run: Mobile backend (FastAPI)
 
-<div align="center">
-🧠 Author
-<b>Ansh</b>
-<i>B.Tech CSE</i>
+From:
 
-<b>Focus Areas</b>
-AI Systems (not just models) • Offline-First AI • Controlled & Safe AI Design
+```bash
+cd NEON-FRONTEND/backend
+pip install -r requirements.txt
+uvicorn server:app --host 0.0.0.0 --port 9000 --reload
+```
 
-<i>“Neon is not about how smart the model is.
-It’s about how controlled, safe, and purposeful AI should be.”</i>
+Key endpoints:
+- `POST /api/chat` → `{ reply, mode, action? }`
+- `POST /api/voice` → `{ audio_url, message, action? }`
+- `POST /api/media/upload?type=wallpaper|dp`
+- `GET /api/media/latest?type=wallpaper|dp`
 
-</div> 
+---
+
+## Run: Mobile app (Expo)
+
+```bash
+cd NEON-FRONTEND/frontend
+npm install
+npx expo start -c
+```
+
+On Android:
+- Run on device with Expo Go, or
+- Build APK (see below)
+
+---
+
+## Build APK (Android)
+
+### Option A: Cloud build (no Android Studio required) — EAS Build
+
+```bash
+cd NEON-FRONTEND/frontend
+npm install
+npm i -g eas-cli
+eas login
+eas build:configure
+eas build -p android --profile preview
+```
+
+Notes:
+- Free plan works but can wait in queue.
+- When finished, EAS gives you a download link for the APK.
+
+### Option B: Local build (requires Android SDK / Android Studio)
+
+```bash
+cd NEON-FRONTEND/frontend
+npx expo prebuild
+npx expo run:android --variant release
+```
+
+To produce a shareable APK:
+
+```bash
+cd NEON-FRONTEND/frontend/android
+./gradlew assembleRelease
+```
+
+APK path:
+- `NEON-FRONTEND/frontend/android/app/build/outputs/apk/release/app-release.apk`
+
+---
+
+## Common issues / fixes
+
+### “YouTube opens in Expo Go but not in APK”
+This is typically Android package visibility / `canOpenURL` behavior. The app is set to open `http(s)` links directly using `Linking.openURL()`.
+
+### “Video wallpaper save failed / no storage directory”
+The app saves video wallpapers to the app’s writable directory when possible, and falls back to using the picked URI if the device provides a `content://` URI that cannot be copied.
+
+### “Desktop requested, but I’m running in mobile/server mode”
+This means the backend is in headless mode. Either:
+- switch Default Target to **mobile**, or
+- run Neon locally for desktop actions.
+
+---
+
+## Developer: smoke test commands (offline)
+
+This checks tool outputs and action payload shapes without needing the LLM:
+
+```bash
+python scripts/smoke_commands.py
+```
+
+---
+
+## Security notes
+
+- Desktop “open app” actions are only safe when running locally.
+- High-risk actions (delete file, WhatsApp automation) can require confirmation depending on configuration.
+
+---
+
+## License
+
+Add your license here (MIT / Apache-2.0 / proprietary).
+

@@ -1,6 +1,8 @@
 # Python cache
 __pycache__/
 *.pyc
+.venv/
+venv/
 
 # Models / Weights
 models/
@@ -11,8 +13,18 @@ models/
 # Voice files
 voice/*.wav
 
-# Runtime memory
+# Runtime files
 memory/state.json
+memory/state/
+*.log
+system.log
+
+# Environment files
+.env
+.env.*
+
+# Nested repos
+NEON-FRONTEND/
 
 # OS junk
 .DS_Store

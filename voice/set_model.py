@@ -26,7 +26,7 @@ def set_models():
             timeout=60
         )
         r1.raise_for_status()
-        print("✅ GPT model set")
+        print("[OK] GPT model set")
 
         # 🔹 Set SoVITS model
         print("[MODEL] Setting SoVITS model...")
@@ -36,7 +36,7 @@ def set_models():
             timeout=60
         )
         r2.raise_for_status()
-        print("✅ SoVITS model set")
+        print("[OK] SoVITS model set")
 
     except Exception as e:
         print("[MODEL ERROR]", e)
