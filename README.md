@@ -100,12 +100,12 @@ sequenceDiagram
 flowchart TD
   UserText[User Text]
 
-  TargetHint{Contains mobile/desktop? or DefaultTarget}
-  Headless{NEON_HEADLESS == 1?}
+  TargetHint{Contains mobile or desktop or DefaultTarget}
+  Headless{NEON_HEADLESS equals 1}
 
-  MobileAction[Return action payload (open_url / open_camera / open_gallery)]
+  MobileAction[Return mobile action payload open_url open_camera open_gallery]
   DesktopAction[Open desktop app or browser]
-  ErrorDesktop[Return friendly error: Desktop requested]
+  ErrorDesktop[Return friendly error Desktop requested]
 
   UserText --> TargetHint
 
