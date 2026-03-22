@@ -98,17 +98,21 @@ sequenceDiagram
 
 ```mermaid
 flowchart TD
-  UserText[UserText]
-  TargetHint{Contains mobile/desktop?\n(or DefaultTarget)}
-  Headless{NEON_HEADLESS == 1?}
-  MobileAction[Return action payload\n(open_url/open_camera/open_gallery)]
-  DesktopAction[Open desktop app/browser]
-  ErrorDesktop[Return friendly error\n\"Desktop requested...\"]
+  UserText[User Text]
+
+  TargetHint{Contains mobile or desktop or DefaultTarget}
+  Headless{NEON_HEADLESS equals 1}
+
+  MobileAction[Return mobile action payload open_url open_camera open_gallery]
+  DesktopAction[Open desktop app or browser]
+  ErrorDesktop[Return friendly error Desktop requested]
 
   UserText --> TargetHint
+
   TargetHint -->|mobile| MobileAction
   TargetHint -->|desktop| Headless
   TargetHint -->|auto| Headless
+
   Headless -->|yes| ErrorDesktop
   Headless -->|no| DesktopAction
 ```
