@@ -11,7 +11,7 @@ MEMORY_DIR   = os.path.join(_HERE, "state")
 MEMORY_FILE  = os.path.join(MEMORY_DIR, "state.json")
 
 # FIX 9: Schema version — increment when fields change
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # ── DEFAULTS ──────────────────────────────────────────────────────────────────
 _DEFAULTS: Dict[str, Any] = {
@@ -40,6 +40,10 @@ _DEFAULTS: Dict[str, Any] = {
         "signature_phrase": "Got you.",
         "signature_tier":   "baseline",
     },
+    # v5: Command usage stats for preference auto-learning
+    "command_stats": {},
+    # v5: Hourly activity for time-aware greetings  (hour -> count)
+    "usage_patterns": {},
 }
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
@@ -98,6 +102,13 @@ def _migrate(data: Dict[str, Any]) -> Dict[str, Any]:
         data["prefs"].setdefault("banter_mode", "balanced")
         data["schema_version"] = 4
         print("[MEMORY] Migrated state.json: v3 -> v4")
+
+    if version < 5:
+        # v4 -> v5: add command_stats and usage_patterns
+        data.setdefault("command_stats", {})
+        data.setdefault("usage_patterns", {})
+        data["schema_version"] = 5
+        print("[MEMORY] Migrated state.json: v4 -> v5")
 
     return data
 
@@ -386,3 +397,80 @@ class MemoryManager:
             "Mood":        live.get("emotion", "calm"),
             "TotalTurns":  self.state.get("total_turns", 0),
         }
+
+    # ── COMMAND STATS (v5 — usage learning) ──────────────────────────────────
+
+    def record_command(self, tool_name: str, detail: str = "") -> None:
+        """Track which tools and targets are used most for preference auto-learning."""
+        with self._lock:
+            stats = self.state.get("command_stats")
+            if not isinstance(stats, dict):
+                stats = {}
+                self.state["command_stats"] = stats
+            # Increment tool-level count
+            if tool_name not in stats:
+                stats[tool_name] = {"count": 0, "targets": {}}
+            entry = stats[tool_name]
+            if not isinstance(entry, dict):
+                entry = {"count": 0, "targets": {}}
+                stats[tool_name] = entry
+            entry["count"] = entry.get("count", 0) + 1
+            # Track sub-targets (app names, queries, etc.)
+            if detail:
+                targets = entry.get("targets")
+                if not isinstance(targets, dict):
+                    targets = {}
+                    entry["targets"] = targets
+                key = detail.lower().strip()[:50]
+                targets[key] = targets.get(key, 0) + 1
+
+            # Track hourly usage for time-aware greetings
+            hour = str(time.localtime().tm_hour)
+            patterns = self.state.get("usage_patterns")
+            if not isinstance(patterns, dict):
+                patterns = {}
+                self.state["usage_patterns"] = patterns
+            patterns[hour] = patterns.get(hour, 0) + 1
+
+    def get_top_commands(self, n: int = 5) -> list:
+        """Return the N most-used tool+target combos."""
+        stats = self.state.get("command_stats", {})
+        if not isinstance(stats, dict):
+            return []
+        items = []
+        for tool, data in stats.items():
+            if isinstance(data, dict):
+                items.append((tool, data.get("count", 0)))
+        items.sort(key=lambda x: x[1], reverse=True)
+        return items[:n]
+
+    def get_active_hours(self) -> list:
+        """Return hours of the day when Boss is most active."""
+        patterns = self.state.get("usage_patterns", {})
+        if not isinstance(patterns, dict):
+            return []
+        items = [(int(h), c) for h, c in patterns.items()]
+        items.sort(key=lambda x: x[1], reverse=True)
+        return items[:3]
+
+    def auto_update_prefs(self) -> None:
+        """Auto-learn music platform preference from usage patterns."""
+        stats = self.state.get("command_stats", {})
+        if not isinstance(stats, dict):
+            return
+        play = stats.get("play_music")
+        if not isinstance(play, dict):
+            return
+        targets = play.get("targets", {})
+        if not isinstance(targets, dict):
+            return
+        # Count platform mentions
+        yt_count = sum(v for k, v in targets.items() if "youtube" in k or "yt" in k)
+        sp_count = sum(v for k, v in targets.items() if "spotify" in k)
+        total = play.get("count", 0)
+        if total >= 10:  # Only auto-learn after enough data
+            prefs = self.state.get("prefs", {})
+            if yt_count > sp_count * 2:
+                prefs["music_platform"] = "youtube"
+            elif sp_count > yt_count * 2:
+                prefs["music_platform"] = "spotify"

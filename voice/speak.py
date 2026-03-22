@@ -6,6 +6,11 @@ from io import BytesIO
 import re
 import os
 
+try:
+    from style.postprocess import prepare_tts_text as _shared_prepare_tts_text
+except ImportError:
+    _shared_prepare_tts_text = None
+
 # =========================
 # ⚙️ CONFIGURATION
 # =========================
@@ -42,6 +47,9 @@ def _prepare_text(text: str) -> str:
     TTS-safe text normalization for GPT-SoVITS.
     Ensures clean speech, no filler, no action narration.
     """
+    if _shared_prepare_tts_text is not None:
+        return _shared_prepare_tts_text(text, max_chars=300)
+
     if not text:
         return ""
 
@@ -84,13 +92,7 @@ def _prepare_text(text: str) -> str:
     # 5. Length guard (keeps TTS snappy)
     # Prevents latency spikes if LLM hallucinates a huge paragraph
     if len(text) > 300:
-        text = text[:300]
-
-    # 6. Smart Silent Anchor
-    # Only add the dot if the sentence starts with a Letter (A-Z).
-    # If it starts with "..." or "!" or "?", we don't add it.
-    if re.match(r"^[A-Za-z]", text):
-        text = ". " + text
+        text = text[:300].rsplit(" ", 1)[0]
 
     return text
 
@@ -104,6 +106,8 @@ def speak(text: str):
     clean_text = _prepare_text(text)
     if not clean_text:
         return
+    print(f"[TTS RAW] {text!r}")
+    print(f"[TTS SAY] {clean_text!r}")
 
     # Check if reference audio exists to avoid API 500 errors
     if not os.path.exists(REF_AUDIO_PATH):

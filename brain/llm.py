@@ -1,11 +1,12 @@
-import re
-import json
-import requests
-import threading
-import time
-import sys
 import os
+import re
+import sys
+import json
+import time
+import threading
 import inspect
+import requests
+from collections import deque
 from typing import List, Dict, Optional
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -67,6 +68,14 @@ except ImportError:
     def add_lived_in_personality(reply: str, status: Dict, **kwargs) -> str:
         return reply
 
+try:
+    from brain.command_flavor import flavor_command_response, flavor_multi_results
+except ImportError:
+    def flavor_command_response(action_name, raw_message, user_input="", emotion_status=None):
+        return raw_message
+    def flavor_multi_results(results, user_input="", emotion_status=None):
+        return "\n".join(results) if results else ""
+
 # ── CONFIGURATION ────────────────────────────────────────────────────────────
 OLLAMA_URL   = "http://localhost:11434/api/chat"
 OLLAMA_GENERATE_URL = "http://localhost:11434/api/generate"
@@ -80,28 +89,58 @@ SLOW_WARN    = 8
 
 # ── INTENT DETECTION ─────────────────────────────────────────────────────────
 _COMMAND_RE = re.compile(
-    r"\b(open|launch|start|run|execute|delete|remove|create|make|send|close|quit|kill|search|find|lookup|play|status|check)\b",
+    r"\b(open|launch|start|run|execute|delete|remove|create|make|send|close|quit|kill|search|find|lookup|play|status|check|system|cpu|ram|memory|disk|gpu|battery|uptime|personality|mode|volume|mute|unmute|loud|quiet|brightness|bright|dim|screenshot|lock|shutdown|shut down|restart|reboot|sleep|hibernate|wifi|bluetooth|connect|turn off|turn on)\b",
     re.IGNORECASE,
 )
 
+# BUG FIX: Extended question patterns — the old regex only matched start-of-sentence
+# which missed "can you tell me", "do you think", "is there a way", etc.
 _QUESTION_RE = re.compile(
-    r"^(what|how|why|who|when|where|explain|tell me|can you explain|do you know)",
+    r"^\s*(what|how|why|who|when|where|explain|tell me|can you explain|do you know|can you tell|do you think|is there|are there|could you explain|would you|should i|is it|what's|how's|why's|who's|does|did|have you|has)",
     re.IGNORECASE,
 )
+
+# Words that on their own don't necessarily mean "run a tool"
+# e.g. "how does memory work" should NOT trigger system_status
+_WEAK_COMMAND_WORDS = frozenset({
+    "find", "check", "status", "system", "memory", "disk", "run",
+    "start", "play", "search", "connect",
+})
+
+# Strong action verbs that almost always mean "do this right now"
+_STRONG_COMMAND_WORDS = frozenset({
+    "open", "launch", "execute", "delete", "remove", "create", "make",
+    "send", "close", "quit", "kill", "mute", "unmute", "shutdown", "shut",
+    "restart", "reboot", "hibernate", "lock", "screenshot", "dim", "turn",
+})
 
 def _is_command(text: str) -> bool:
-    if _QUESTION_RE.match(text.strip()):
+    stripped = text.strip()
+    # If it looks like a question, only treat it as a command if it contains
+    # a STRONG action verb (e.g. "can you open chrome").
+    if _QUESTION_RE.match(stripped):
+        lower = stripped.lower()
+        tokens = set(re.findall(r"\b\w+\b", lower))
+        if tokens & _STRONG_COMMAND_WORDS:
+            return True
         return False
-    return bool(_COMMAND_RE.search(text))
+    return bool(_COMMAND_RE.search(stripped))
 
 # ── TECHNICAL TOPIC DETECTION ────────────────────────────────────────────────
-_TECH_KEYWORDS = frozenset({
+# BUG FIX: Words like 'memory', 'fix', 'error', 'bug' were causing false
+# positives—"fix my volume" or "I have a memory" would route to the large
+# model and change temperature, hurting conversational quality.
+_TECH_KEYWORDS_STRONG = frozenset({
     "python", "javascript", "typescript", "rust", "golang", "java", "c++", "c#",
-    "def ", "class ", "import ", "function", "variable", "loop",
-    "code", "debug", "error", "bug", "fix", "api", "script", "terminal",
-    "json", "xml", "yaml", "compile", "runtime", "stack", "memory",
-    "git", "docker", "linux", "bash", "regex", "database", "sql", "server",
+    "function", "variable", "loop",
+    "code", "debug", "api", "script", "terminal",
+    "json", "xml", "yaml", "compile", "runtime", "stack",
+    "git", "docker", "linux", "bash", "regex", "database", "sql",
     "library", "module", "package", "framework", "algorithm",
+})
+# These only count as technical when combined with another tech keyword
+_TECH_KEYWORDS_WEAK = frozenset({
+    "error", "bug", "fix", "memory", "server", "def", "class", "import",
 })
 
 _TECH_STARTS = ("explain", "what is", "what are", "how does", "how do", "how to")
@@ -109,12 +148,15 @@ _TECH_STARTS = ("explain", "what is", "what are", "how does", "how do", "how to"
 def _is_technical(text: str) -> bool:
     lower = text.lower()
     tokens = set(re.findall(r"\b\w+\b", lower))
-    has_keywords = bool(tokens & _TECH_KEYWORDS) 
-    
-    # FIX: Prevent false positives on conversational phrases starting with "how"
-    if lower.startswith(_TECH_STARTS) and has_keywords:
+    has_strong = bool(tokens & _TECH_KEYWORDS_STRONG)
+    has_weak = bool(tokens & _TECH_KEYWORDS_WEAK)
+
+    if has_strong:
         return True
-    return has_keywords
+    # Weak keywords only count if the sentence starts with a technical preamble
+    if has_weak and lower.startswith(_TECH_STARTS):
+        return True
+    return False
 
 def _extract_music_query(raw_lower: str) -> str:
     """
@@ -379,13 +421,159 @@ TOOLS: List[Dict] = [
         "function": {
             "name": "system_status",
             "description": (
-                "Checks whether core services are online (Ollama, TTS server, backend) "
-                "and returns a compact status report."
+                "Checks system health: services (Ollama, TTS, backend) and "
+                "hardware (CPU, RAM, disk, GPU, battery, uptime, top processes). "
+                "Use when Boss asks about system status, RAM usage, CPU load, "
+                "disk space, GPU temp, battery level, or 'how's my system'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {},
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_personality",
+            "description": (
+                "Changes Neon's personality mode. Use when Boss says things like "
+                "'be more roasty', 'chill mode', 'be curious', 'stop roasting', 'normal mode'. "
+                "Modes: 'balanced' (default), 'roaster' (more teasing), 'curious' (asks follow-ups)."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "description": "Personality mode: 'balanced', 'roaster', or 'curious'. Also accepts aliases like 'roasty', 'chill', 'spicy'."
+                    }
+                },
+                "required": ["mode"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "volume_control",
+            "description": (
+                "Controls system volume. Use when Boss says 'mute', 'unmute', "
+                "'volume up', 'volume down', 'set volume to 50', 'louder', 'quieter'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "Volume action: 'mute', 'unmute', 'up', 'down', or 'set'"
+                    },
+                    "level": {
+                        "type": "integer",
+                        "description": "Volume level 0-100 (only used with 'set' action)"
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "brightness_control",
+            "description": (
+                "Controls screen brightness. Use when Boss says 'brightness up', "
+                "'brightness down', 'dim the screen', 'brighter', 'set brightness to 80'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "Brightness action: 'up', 'down', 'set', or 'get'"
+                    },
+                    "level": {
+                        "type": "integer",
+                        "description": "Brightness level 0-100 (only used with 'set' action)"
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "take_screenshot",
+            "description": (
+                "Takes a screenshot and saves to workspace. Use when Boss says "
+                "'take a screenshot', 'capture screen', 'screenshot'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "lock_screen",
+            "description": (
+                "Locks the computer screen. Use when Boss says 'lock my PC', "
+                "'lock screen', 'lock the computer'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "power_control",
+            "description": (
+                "Shutdown, restart, or sleep the computer. Use when Boss explicitly says "
+                "'shutdown', 'restart', 'reboot', 'sleep', or 'hibernate'. "
+                "ONLY use for direct commands, not casual mentions."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "description": "Power action: 'shutdown', 'restart', 'sleep', or 'cancel'"
+                    },
+                },
+                "required": ["action"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "toggle_connectivity",
+            "description": (
+                "Enable, disable, or toggle WiFi or Bluetooth. Use when Boss says "
+                "'turn off wifi', 'enable bluetooth', 'toggle wifi', 'disconnect wifi'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "What to control: 'wifi' or 'bluetooth'"
+                    },
+                    "state": {
+                        "type": "string",
+                        "description": "Desired state: 'on', 'off', or 'toggle'"
+                    },
+                },
+                "required": ["target"],
             },
         },
     },
@@ -399,6 +587,9 @@ _TOOL_RULE = (
     "CRITICAL FALLBACK RULE: If you use the 'open_app' tool and it returns an error saying the app is not found, "
     "DO NOT panic. Politely tell Boss 'I can't find this app, it doesn't seem to exist on your system.' "
     "Then, explicitly ask: 'Should I search for it on Google or YouTube instead?'"
+    "\nNEVER FAKE TOOL RESULTS: If a tool returns 'blocked' or 'confirmation required', "
+    "you MUST tell Boss it needs confirmation. NEVER pretend the action completed. "
+    "NEVER say 'shutting down' or 'done' if the tool did not return status='success'."
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -408,13 +599,18 @@ class NeonBrain:
     def __init__(self):
         self.engine  = EmotionEngine()
         self.memory  = MemoryManager()
-        self.system  = SystemController()
+        # BUG FIX: Was defaulting to require_confirmation=True, which blocked
+        # high-risk commands (shutdown, delete, whatsapp) with no way to
+        # actually confirm — the LLM would then hallucinate success.
+        self.system  = SystemController(require_confirmation=False)
         self.history: List[Dict[str, str]] = []
         self.last_action: Optional[Dict] = None
 
         self._last_input: str  = ""
         self._last_input_ts: float = 0.0
         self._current_user_lower: str = ""
+        # Feature 5: Smart command cooldown — deque of (tool_name, timestamp)
+        self._command_history: deque = deque(maxlen=20)
 
         self.session = requests.Session()
         retries = Retry(total=2, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504])
@@ -550,7 +746,7 @@ class NeonBrain:
             print(f"[ERROR] [NEON NET ERROR] {label}: {e}")
             return None
 
-    def _execute_tool_calls(self, tool_calls: List[Dict], context: List[Dict]) -> str:
+    def _execute_tool_calls(self, tool_calls: List[Dict], context: List[Dict], target: str = "auto") -> str:
         def _tool_result_to_text(result) -> str:
             """
             Tool methods return dicts for structured status.
@@ -608,6 +804,9 @@ class NeonBrain:
             except Exception:
                 prefs = {}
 
+            # Use server-provided target; fall back to text detection
+            resolved_target = target if target in {"mobile", "desktop"} else _detect_target(self._current_user_lower or "")
+
             if func_name == "play_music":
                 # If model forgets parameters, infer from user sentence.
                 if "query" not in args or not str(args.get("query") or "").strip():
@@ -619,9 +818,9 @@ class NeonBrain:
                 if "autoplay" not in args:
                     args["autoplay"] = True
                 if "target" not in args:
-                    args["target"] = _detect_target(self._current_user_lower or "")
+                    args["target"] = resolved_target
                 # If running headless (mobile/backend), prefer mobile unless user explicitly said desktop
-                if os.getenv("NEON_HEADLESS", "0").strip() == "1" and "desktop" not in (self._current_user_lower or ""):
+                if os.getenv("NEON_HEADLESS", "0").strip() == "1" and resolved_target != "desktop":
                     if args.get("target") in {"auto", "desktop", None}:
                         args["target"] = "mobile"
             if func_name == "open_app":
@@ -630,18 +829,30 @@ class NeonBrain:
                     if inferred_app:
                         args["app_name"] = inferred_app
                 if "target" not in args:
-                    args["target"] = _detect_target(self._current_user_lower or "")
-                if os.getenv("NEON_HEADLESS", "0").strip() == "1" and "desktop" not in (self._current_user_lower or ""):
+                    args["target"] = resolved_target
+                if os.getenv("NEON_HEADLESS", "0").strip() == "1" and resolved_target != "desktop":
                     if args.get("target") in {"auto", "desktop", None}:
                         args["target"] = "mobile"
             if func_name in {"search_google", "search_youtube"}:
                 if "target" not in args:
-                    args["target"] = _detect_target(self._current_user_lower or "")
-                if os.getenv("NEON_HEADLESS", "0").strip() == "1" and "desktop" not in (self._current_user_lower or ""):
+                    args["target"] = resolved_target
+                if os.getenv("NEON_HEADLESS", "0").strip() == "1" and resolved_target != "desktop":
                     if args.get("target") in {"auto", "desktop", None}:
                         args["target"] = "mobile"
 
             print(f"   -> Executing: {func_name}({args})")
+
+            # Feature 5: Smart cooldown check
+            # BUG FIX: Old code silently skipped the command with "continue"
+            # which meant the tool NEVER ran on a retry, making it look
+            # like the command failed.  Now we just warn but still execute.
+            now = time.time()
+            recent_same = [
+                ts for (fn, ts) in self._command_history
+                if fn == func_name and (now - ts) < 3.0
+            ]
+            if recent_same:
+                print(f"[NEON] Cooldown: {func_name} was called recently, running anyway.")
 
             if func:
                 try:
@@ -658,8 +869,41 @@ class NeonBrain:
                     result = func(**args)
                 except Exception as e:
                     result = f"Error in {func_name}: {e}"
+
+                # BUG FIX: If tool returned 'blocked', make it very clear
+                # to the LLM so it doesn't hallucinate success.
+                if isinstance(result, dict) and result.get("status") == "blocked":
+                    blocked_msg = result.get("message", "Action was blocked.")
+                    result = {"status": "blocked", "message": f"BLOCKED: {blocked_msg} Ask Boss for confirmation before retrying."}
             else:
                 result = f"Error: Tool '{func_name}' not found in SystemController."
+
+            # Feature 5: Record in cooldown history
+            self._command_history.append((func_name, now))
+
+            # Feature 6: Record command stats for usage learning
+            try:
+                detail = ""
+                if func_name == "open_app":
+                    detail = args.get("app_name", "")
+                elif func_name in {"search_google", "search_youtube", "play_music"}:
+                    detail = args.get("query", "")
+                elif func_name == "set_personality":
+                    detail = args.get("mode", "")
+                self.memory.record_command(func_name, detail)
+            except Exception:
+                pass
+
+            # Feature 1: Persist personality mode change
+            if func_name == "set_personality" and isinstance(result, dict):
+                new_mode = result.get("mode")
+                if new_mode and result.get("status") == "success":
+                    try:
+                        prefs = self.memory.state.get("prefs", {})
+                        prefs["banter_mode"] = new_mode
+                        self.memory.state["prefs"] = prefs
+                    except Exception:
+                        pass
 
             result_text = _tool_result_to_text(result) or str(result)
             if isinstance(result, dict) and isinstance(result.get("action"), dict):
@@ -671,21 +915,40 @@ class NeonBrain:
             })
             results.append(result_text)
 
+        # Feature 6: Auto-update prefs from usage patterns
+        try:
+            self.memory.auto_update_prefs()
+        except Exception:
+            pass
+
         return "\n".join(results)
 
-    def chat(self, user_input: str) -> Optional[str]:
+    def chat(self, user_input: str, target: str = "auto") -> Optional[str]:
         if not user_input or not user_input.strip():
             return None
 
         user_input = user_input.strip()
         lower      = user_input.lower()
         self._current_user_lower = lower
+        self._current_target = target
 
         now = time.time()
         seconds_since_last = (now - self._last_input_ts) if self._last_input_ts else None
-        if user_input.strip().lower() == self._last_input.strip().lower():
-            print("[NEON] Duplicate input ignored.")
-            return None
+        # BUG FIX: Old duplicate check blocked ANY repeat of the same text
+        # even if sent intentionally (e.g. "open chrome" twice in a row).
+        # Now only block exact duplicates within a tight 3-second window.
+        if (
+            user_input.strip().lower() == self._last_input.strip().lower()
+            and seconds_since_last is not None
+            and seconds_since_last < 3.0
+        ):
+            print("[NEON] Duplicate input ignored (within 3s).")
+            import random
+            return random.choice([
+                "I'm listening, Boss.",
+                "I heard you the first time.",
+                "Still here.",
+            ])
         self._last_input    = user_input
         self._last_input_ts = now
 
@@ -702,7 +965,7 @@ class NeonBrain:
         if not technical:
             self.engine.process_input(user_input)
 
-        status = self.engine.status
+        status = self.engine.status.copy()
 
         # FIX: Fuzzy apology check and grudge deflation
         apology_words = ("sorry", "forgive", "apology", "my bad", "apologize", "mistake")
@@ -712,7 +975,8 @@ class NeonBrain:
             if not is_apology:
                 return "..."
             else:
-                status["grudge_score"] = max(0, status.get("grudge_score", 0) - 2.0)
+                self.engine.status["grudge_score"] = max(0, status.get("grudge_score", 0) - 2.0)
+                status = self.engine.status.copy()
 
         system_prompt = get_system_prompt(
             emotion   = status["emotion"],
@@ -752,6 +1016,45 @@ class NeonBrain:
             system_prompt += f"\n\n[MEMORY RESTORE: {self._boot_memory}]"
             self._boot_memory = None
 
+        # Feature 3: Proactive time-aware context injection
+        try:
+            local = time.localtime()
+            hour = local.tm_hour
+            if 5 <= hour < 12:
+                greeting_hint = "morning"
+            elif 12 <= hour < 17:
+                greeting_hint = "afternoon"
+            elif 17 <= hour < 21:
+                greeting_hint = "evening"
+            else:
+                greeting_hint = "late_night"
+
+            session_info = ""
+            if seconds_since_last and seconds_since_last > 3600:
+                hrs = int(seconds_since_last // 3600)
+                session_info = f" Boss was away for ~{hrs} hour{'s' if hrs > 1 else ''}."
+            elif seconds_since_last and seconds_since_last < 60:
+                session_info = " Boss just spoke."
+
+            # If it's late night and Boss has been active, note it subtly
+            late_night_note = ""
+            if greeting_hint == "late_night" and self.memory.state.get("total_turns", 0) > 5:
+                late_night_note = " It's late — you might gently check if Boss needs sleep."
+
+            system_prompt += (
+                f"\n\n[TIME CONTEXT: {hour:02d}:{local.tm_min:02d} ({greeting_hint})."
+                f"{session_info}{late_night_note}]"
+            )
+        except Exception:
+            pass
+
+        # Inject Active Platform Context
+        try:
+            platform_name = "Mobile App" if target.lower() == "mobile" else "Desktop PC"
+            system_prompt += f"\n\n[USER PLATFORM: Boss is currently using the {platform_name}. If asked about your current mode or capabilities, remember you are controlling the {platform_name}.]"
+        except Exception:
+            pass
+
         context: List[Dict] = [{"role": "system", "content": system_prompt}]
         context.extend(self._get_history_slice(technical))
         context.append({"role": "user", "content": user_input})
@@ -764,9 +1067,16 @@ class NeonBrain:
         }
 
         model_supports_tools = "llama" in chosen_model.lower() or "tool" in chosen_model.lower()
+        # BUG FIX: Only attach tools when we're confident it's a command.
+        # Previously the model would hallucinate tool_calls for
+        # borderline inputs like "check this out" or "play it cool".
         if is_command and model_supports_tools:
             payload["tools"]       = TOOLS
             payload["tool_choice"] = "auto"
+        else:
+            # Explicitly exclude tools so the model can't hallucinate them
+            payload.pop("tools", None)
+            payload.pop("tool_choice", None)
 
         start_t  = time.time()
         response = self._post(payload, label="primary")
@@ -785,10 +1095,41 @@ class NeonBrain:
             print("🛠️ [NEON] Tool Call Detected!")
             context.append(message_data) 
 
-            tool_result = self._execute_tool_calls(message_data["tool_calls"], context)
+            tool_result = self._execute_tool_calls(message_data["tool_calls"], context, target=self._current_target)
             
-            # Speak only the human-facing tool output (no dict keys/JSON)
-            raw_reply = tool_result.strip()
+            # 🎀 Flavor the dry tool output with anime girl personality
+            # Feature 2: Handle multi-tool chaining
+            raw_parts = [p.strip() for p in tool_result.strip().split("\n") if p.strip()]
+            tool_calls_list = message_data.get("tool_calls", [])
+            
+            if len(raw_parts) > 1 and len(tool_calls_list) > 1:
+                # Multi-action: flavor each result, then combine
+                flavored_parts = []
+                for i, part in enumerate(raw_parts):
+                    try:
+                        act_name = tool_calls_list[i]["function"]["name"]
+                    except (KeyError, IndexError):
+                        act_name = ""
+                    flavored_parts.append(flavor_command_response(
+                        action_name=act_name,
+                        raw_message=part,
+                        user_input=user_input,
+                        emotion_status=status,
+                    ))
+                raw_reply = flavor_multi_results(flavored_parts, user_input, status)
+            else:
+                # Single action
+                action_name = ""
+                try:
+                    action_name = tool_calls_list[0]["function"]["name"]
+                except (KeyError, IndexError):
+                    pass
+                raw_reply = flavor_command_response(
+                    action_name=action_name,
+                    raw_message=tool_result.strip(),
+                    user_input=user_input,
+                    emotion_status=status,
+                )
             
         else:
             raw_reply = message_data.get("content", "")
@@ -800,28 +1141,29 @@ class NeonBrain:
         if not raw_reply:
             return None
 
+        # Guard: if LLM emitted raw JSON instead of natural language, don't speak it.
+        # BUG FIX: Old guard only caught '{' and '```json'.  The model can also
+        # emit '[{', '```\n{', or just a dict-like blob.  Catch more patterns.
+        stripped = raw_reply.strip()
+        _looks_like_json = (
+            stripped.startswith("{") or stripped.startswith("[{")
+            or stripped.startswith("```")
+        )
+        _has_tool_markers = (
+            '"name"' in stripped or '"function"' in stripped
+            or '"tool_call"' in stripped or '"action"' in stripped
+        )
+        _has_arg_markers = (
+            '"arguments"' in stripped or '"parameters"' in stripped
+            or '"type"' in stripped
+        )
+        if _looks_like_json and _has_tool_markers and _has_arg_markers:
+            print(f"[WARN] [NEON] Raw JSON reply intercepted: {stripped[:120]}")
+            raw_reply = "Sorry Boss, I didn't quite catch that. Could you repeat?"
+
         final_reply = postprocess_reply(raw_reply)
 
-        # Add "lived-in" personality touches only for non-technical, non-tool outputs.
-        # Keep it subtle: this should never hijack meaning or spam the user.
-        if (not technical) and (not is_command) and (not message_data.get("tool_calls")):
-            try:
-                signature = (self.memory.state.get("quirks") or {}).get("signature_phrase")
-            except Exception:
-                signature = None
-            try:
-                banter_mode = (self.memory.state.get("prefs") or {}).get("banter_mode", "balanced")
-            except Exception:
-                banter_mode = "balanced"
-            final_reply = add_lived_in_personality(
-                final_reply,
-                status,
-                user_input=user_input,
-                seconds_since_last_user_msg=seconds_since_last,
-                signature_phrase=signature,
-                banter_mode=banter_mode,
-                allow=True,
-            )
+
 
         self.history.append({"role": "user",      "content": user_input})
         self.history.append({"role": "assistant",  "content": final_reply})

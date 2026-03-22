@@ -2,7 +2,7 @@ from brain.llm import NeonBrain
 
 brain = NeonBrain()  # single persistent brain
 
-def think_and_reply(prompt: str):
+def think_and_reply(prompt: str, target: str = "auto"):
     if not prompt or not prompt.strip():
         return {
             "reply": "",
@@ -10,7 +10,7 @@ def think_and_reply(prompt: str):
         }
 
     try:
-        reply = brain.chat(prompt)
+        reply = brain.chat(prompt, target=target)
         return {
             "reply": reply or "",
             "mode": brain.engine.status.get("emotion", "calm"),

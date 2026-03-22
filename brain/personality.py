@@ -114,6 +114,9 @@ def add_lived_in_personality(
                 "Talk to me.",
                 "Keep going.",
                 "I'm listening.",
+                "Leave it to me, Boss.",
+                "Anything else?",
+                "I got you, Boss.",
             ],
         )
         # Add as a short closer if not already ending with punctuation-heavy flourish.
@@ -128,6 +131,7 @@ def add_lived_in_personality(
             [
                 "Make it quick.",
                 "Say it straight.",
+                "Just spit it out.",
             ],
         )
         if reply.endswith((".", "!", "?")):
@@ -152,7 +156,7 @@ def add_lived_in_personality(
     if signature_phrase and isinstance(signature_phrase, str):
         tag = signature_phrase.strip()
     else:
-        tag = _pick(rng, ["Alright.", "Got you."])
+        tag = _pick(rng, ["Alright.", "Got you.", "At your service, Boss.", "I'm on it."])
     if reply.endswith((".", "!", "?")):
         return f"{reply} {tag}"
     return f"{reply}. {tag}"
